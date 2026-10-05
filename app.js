@@ -1,4 +1,3 @@
-
 import Peer from "https://esm.sh/peerjs@1.5.4?bundle";
 
 const CLEAN_GOAL=40, RUINED_GOAL=20, ROUND_MS=90000, SAB_COOLDOWN=5000;
@@ -22,8 +21,6 @@ const esc=s=>String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;"
 
 function makePeer(id){
   return new Promise((resolve,reject)=>{
-    // Let PeerJS use its official cloud defaults. Explicitly overriding the
-    // cloud host can make discovery less reliable across browser/network types.
     peer=new Peer(id,{debug:2});
     const timeout=setTimeout(()=>reject(new Error("Peer server timeout")),12000);
     let opened=false;
@@ -53,16 +50,17 @@ function makePeer(id){
   });
 }
 const sendHost=d=>hostConn?.open&&hostConn.send(d);
-function emitState(){ if(!isHost)return; connections.forEach(c=>c.open&&c.send({type:"state",state})); renderState(); }
+function emitState(){if(!isHost)return;connections.forEach(c=>c.open&&c.send({type:"state",state}));renderState()}
 
 async function createRoom(){
-  myName=cleanName(); if(!myName)return msg("homeStatus","Enter your name first.");
-  roomCode=makeCode(); myId=roomPeer(roomCode); isHost=true; msg("homeStatus","Opening room...");
+  myName=cleanName();
+  if(!myName)return msg("homeStatus","Enter the name or nickname you want other players to see.");
+  roomCode=makeCode();myId=roomPeer(roomCode);isHost=true;msg("homeStatus","Opening room...");
   try{
     await makePeer(myId);
-    state={status:"lobby",code:roomCode,hostId:myId,players:[{id:myId,name:myName,ready:true}],clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0};
-    peer.on("connection",acceptConnection); joined=true; enterLobby();
-  }catch(e){ msg("homeStatus","Couldn't create room. Try again."); }
+    state={status:"lobby",code:roomCode,hostId:myId,players:[{id:myId,name:myName,ready:true}],clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0};
+    peer.on("connection",acceptConnection);joined=true;enterLobby();
+  }catch(e){msg("homeStatus","Couldn't create room. Try again.")}
 }
 function acceptConnection(conn){
   const sendHello=()=>{
@@ -77,7 +75,7 @@ function acceptConnection(conn){
   conn.on("data",d=>handleHostMessage(conn,d));
   conn.on("close",()=>{connections.delete(conn.peer);state.players=state.players.filter(p=>p.id!==conn.peer);emitState()});
   conn.on("error",err=>console.error("Incoming connection error:",err));
-  if(conn.open) sendHello(); else conn.on("open",sendHello);
+  if(conn.open)sendHello();else conn.on("open",sendHello);
 }
 function handleHostMessage(conn,d){
   if(!d||typeof d!=="object")return;
@@ -85,16 +83,18 @@ function handleHostMessage(conn,d){
     if(state.status!=="lobby")return conn.send({type:"reject",reason:"Round already started."});
     if(!state.players.some(p=>p.id===conn.peer))state.players.push({id:conn.peer,name:String(d.name||"Player").slice(0,16),ready:false});
     emitState();
-  } else if(d.type==="ready"){
-    const p=state.players.find(p=>p.id===conn.peer); if(p){p.ready=!!d.ready;emitState()}
-  } else if(d.type==="sort") hostSort(conn.peer,d.bin);
-  else if(d.type==="pull") hostPull(conn.peer);
-  else if(d.type==="sabotage") hostSabotage(conn.peer,d.kind);
+  }else if(d.type==="ready"){
+    const p=state.players.find(p=>p.id===conn.peer);if(p){p.ready=!!d.ready;emitState()}
+  }else if(d.type==="sort")hostSort(conn.peer,d.bin);
+  else if(d.type==="pull")hostPull(conn.peer);
+  else if(d.type==="sabotage")hostSabotage(conn.peer,d.kind);
+  else if(d.type==="soap")hostSoap(conn.peer);
 }
 async function joinRoom(){
-  myName=cleanName(); roomCode=$("roomInput").value.trim().toUpperCase().replace(/[^A-Z0-9]/g,"");
-  if(!myName||roomCode.length<5)return msg("homeStatus","Enter your name and room code.");
-  myId="player-"+crypto.randomUUID(); isHost=false; msg("homeStatus","Joining...");
+  myName=cleanName();roomCode=$("roomInput").value.trim().toUpperCase().replace(/[^A-Z0-9]/g,"");
+  if(!myName)return msg("homeStatus","Enter the name or nickname you want other players to see.");
+  if(roomCode.length<5)return msg("homeStatus","Enter the 5-character room code from the host.");
+  myId="player-"+crypto.randomUUID();isHost=false;msg("homeStatus","Joining...");
   try{
     await makePeer(myId);
     hostConn=peer.connect(roomPeer(roomCode),{reliable:true,serialization:"json"});
@@ -108,7 +108,7 @@ async function joinRoom(){
       msg("homeStatus","Could not connect to that room. Make sure the host is still on the lobby screen.");
     });
     hostConn.on("close",()=>{
-      if(joined) msg("gameStatus","Disconnected from host.");
+      if(joined)msg("gameStatus","Disconnected from host.");
       else msg("homeStatus","Connection closed before joining.");
     });
     setTimeout(()=>{
@@ -117,26 +117,17 @@ async function joinRoom(){
         try{hostConn.close()}catch{}
       }
     },10000);
-  }catch(e){msg("homeStatus","Connection failed. Try again.");}
+  }catch(e){msg("homeStatus","Connection failed. Try again.")}
 }
 function handleClientMessage(d){
   if(!d||typeof d!=="object")return;
   if(d.type==="hello"){
-    joined=true;
-    roomCode=d.code||roomCode;
-    enterLobby();
-  }
-  else if(d.type==="reject"){
-    msg("homeStatus",d.reason||"Couldn't join.");
-    show("home");
-  }
-  else if(d.type==="state"){
+    joined=true;roomCode=d.code||roomCode;enterLobby();
+  }else if(d.type==="reject"){
+    msg("homeStatus",d.reason||"Couldn't join.");show("home");
+  }else if(d.type==="state"){
     state=d.state;
-    if(!joined){
-      joined=true;
-      roomCode=state.code||roomCode;
-      enterLobby();
-    }
+    if(!joined){joined=true;roomCode=state.code||roomCode;enterLobby()}
     renderState();
   }
 }
@@ -145,17 +136,15 @@ function renderState(){
   if(!state)return;
   $("lobbyCode").textContent=state.code;$("gameCode").textContent=state.code;renderPlayers();
   if(state.status==="lobby"){
-    roleSeen=false;
-    show("lobby");
-  }
-  else if(state.status==="playing"&&!roleSeen)showRole();
+    roleSeen=false;show("lobby");
+  }else if(state.status==="playing"&&!roleSeen)showRole();
   else if(state.status==="playing"&&roleSeen){show("game");renderGame()}
   else if(state.status==="ended")renderEnd();
 }
 function renderPlayers(){
   $("lobbyPlayers").innerHTML=state.players.map(p=>'<div class="player-row '+(p.ready?'ready':'')+'"><span>'+esc(p.name)+(p.id===state.hostId?' 👑':'')+'</span><strong>'+(p.ready?'READY':'WAITING')+'</strong></div>').join("");
   $("startBtn").classList.toggle("hidden",!isHost);
-  const p=me(); if(p)$("readyBtn").textContent=p.ready?"NOT READY":"I'M READY";
+  const p=me();if(p)$("readyBtn").textContent=p.ready?"NOT READY":"I'M READY";
 }
 function toggleReady(){
   const p=me();if(!p)return;
@@ -167,7 +156,7 @@ function startRound(){
   if(state.players.some(p=>!p.ready))return msg("lobbyStatus","Everyone must be ready.");
   const sab=state.players[Math.floor(Math.random()*state.players.length)];
   state.players.forEach(p=>p.role=p.id===sab.id?"saboteur":"crew");
-  Object.assign(state,{saboteurId:sab.id,clean:0,ruined:0,ruinedItems:[],winner:null,roundStart:Date.now(),sabReadyAt:Date.now()+3000,status:"playing",item:null,itemSeq:0});
+  Object.assign(state,{saboteurId:sab.id,clean:0,ruined:0,ruinedItems:[],winner:null,roundStart:Date.now(),sabReadyAt:Date.now()+3000,status:"playing",item:null,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0});
   roleSeen=false;emitState();startHostLoops();
 }
 function startHostLoops(){
@@ -192,7 +181,7 @@ function hostTick(){
       state.ruinedItems=state.ruinedItems||[];
       state.ruinedItems.push(state.item.sabotageLabel||state.item.label||"Ruined item");
     }
-    state.item=null;checkWin();emitState()
+    state.item=null;checkWin();emitState();
   }
 }
 function hostSort(playerId,bin){
@@ -208,7 +197,8 @@ function hostSort(playerId,bin){
 function hostPull(playerId){
   if(state.status!=="playing"||!state.item)return;
   const p=state.players.find(x=>x.id===playerId);if(!p||p.role!=="crew")return;
-  if(!state.item.contaminated)state.clean=Math.max(0,state.clean-1);state.item=null;emitState();
+  if(!state.item.contaminated)state.clean=Math.max(0,state.clean-1);
+  state.item=null;emitState();
 }
 function hostSabotage(playerId,kind){
   if(state.status!=="playing"||!state.item||state.item.contaminated||Date.now()<state.sabReadyAt)return;
@@ -221,7 +211,18 @@ function hostSabotage(playerId,kind){
   else if(kind==="white-in-darks")state.item.label=state.item.baseLabel+" + WHITE SOCK 🧦";
   else if(kind==="color-in-whites")state.item.label=state.item.baseLabel+" + COLOR SHIRT 👕";
   state.sabReadyAt=Date.now()+SAB_COOLDOWN;
-  msg("gameStatus","Sabotage planted — if Crew misses it, it will be ruined at the washer.");
+  emitState();
+}
+function hostSoap(playerId){
+  if(state.status!=="playing"||!state.item||!state.item.contaminated||state.soapUsed)return;
+  const p=state.players.find(x=>x.id===playerId);if(!p||p.role!=="crew")return;
+  state.soapUsed=true;
+  state.soapUsedBy=p.name;
+  state.clean++;
+  state.notice="🫧 "+p.name+" used the Soap Save — contaminated load cleaned!";
+  state.noticeUntil=Date.now()+3000;
+  state.item=null;
+  checkWin();
   emitState();
 }
 function checkWin(){if(state.clean>=CLEAN_GOAL)endGame("crew");else if(state.ruined>=RUINED_GOAL)endGame("saboteur")}
@@ -235,7 +236,7 @@ function showRole(){
   const p=me();if(!p)return;const sab=p.role==="saboteur";
   $("roleCard").classList.toggle("sab",sab);$("roleIcon").textContent=sab?"🕵️":"🧺";
   $("roleTitle").textContent=sab?"YOU ARE THE SABOTEUR":"YOU ARE LAUNDRY CREW";
-  $("roleText").textContent=sab?"Secretly contaminate loads. Ruin 20 items before the Crew finishes 40. Your sabotage has a cooldown, so choose your moment.":"Sort each item correctly. If something looks suspicious, pull it before it reaches the washer. Finish 40 clean items before 20 are ruined.";
+  $("roleText").textContent=sab?"Secretly contaminate loads. Ruin 20 items before the Crew finishes 40. Your sabotage has a short cooldown, so choose your moment.":"Sort each item correctly. Pull suspicious items before they reach the washer. Your whole Crew also shares ONE Soap Save that can instantly clean a contaminated item.";
   show("role");
 }
 function enterGame(){roleSeen=true;show("game");renderGame()}
@@ -243,21 +244,42 @@ function renderGame(){
   $("cleanCount").textContent=state.clean;$("ruinedCount").textContent=state.ruined;
   $("timer").textContent=Math.max(0,Math.ceil((ROUND_MS-(Date.now()-state.roundStart))/1000));
   const item=state.item,g=$("garment");
-  if(item){g.textContent=item.label;g.classList.remove("empty");g.classList.toggle("suspicious",item.contaminated);$("suspicionBanner").classList.toggle("hidden",!item.contaminated)}
-  else{g.textContent="NEXT LOAD...";g.className="garment empty";$("suspicionBanner").classList.add("hidden")}
-  const sab=me()?.role==="saboteur";$("crewPanel").classList.toggle("hidden",sab);$("saboteurPanel").classList.toggle("hidden",!sab);
-  const cd=Math.max(0,Math.ceil((state.sabReadyAt-Date.now())/1000));$("cooldownText").textContent=cd?"Sabotage cooling down: "+cd+"s":"Sabotage ready.";
+  if(item){
+    g.textContent=item.label;g.classList.remove("empty");g.classList.toggle("suspicious",item.contaminated);$("suspicionBanner").classList.toggle("hidden",!item.contaminated);
+  }else{
+    g.textContent="NEXT LOAD...";g.className="garment empty";$("suspicionBanner").classList.add("hidden");
+  }
+  const sab=me()?.role==="saboteur";
+  $("crewPanel").classList.toggle("hidden",sab);$("saboteurPanel").classList.toggle("hidden",!sab);
+  const cd=Math.max(0,Math.ceil((state.sabReadyAt-Date.now())/1000));
+  $("cooldownText").textContent=cd?"Sabotage cooling down: "+cd+"s":"Sabotage ready.";
+
+  const soapBtn=$("soapBtn");
+  if(sab){
+    soapBtn.disabled=true;
+    soapBtn.innerHTML='SOAP<br><small>CREW ONLY</small>';
+  }else if(state.soapUsed){
+    soapBtn.disabled=true;
+    soapBtn.innerHTML='SOAP USED<br><small>BY '+esc(state.soapUsedBy||"CREW")+'</small>';
+  }else if(item?.contaminated){
+    soapBtn.disabled=false;
+    soapBtn.innerHTML='🫧 SOAP SAVE<br><small>USE NOW</small>';
+  }else{
+    soapBtn.disabled=true;
+    soapBtn.innerHTML='SOAP SAVE<br><small>1 USE LEFT</small>';
+  }
+
   $("avatars").innerHTML=state.players.map(p=>'<div class="avatar">🧑‍🔧<span>'+esc(p.name)+'</span></div>').join("");
   $("gamePlayers").innerHTML=state.players.map(p=>'<span class="mini-chip">'+esc(p.name)+(p.id===state.hostId?' 👑':'')+'</span>').join("");
   const ruinedItems=state.ruinedItems||[];
   $("ruinedListCount").textContent=ruinedItems.length+" item"+(ruinedItems.length===1?"":"s");
-  $("ruinedList").innerHTML=ruinedItems.length
-    ? ruinedItems.slice(-12).map(x=>'<span class="ruined-chip">'+esc(x)+'</span>').join("")
-    : '<span class="ruined-empty">Nothing ruined yet.</span>';
+  $("ruinedList").innerHTML=ruinedItems.length?ruinedItems.slice(-12).map(x=>'<span class="ruined-chip">'+esc(x)+'</span>').join(""):'<span class="ruined-empty">Nothing ruined yet.</span>';
+  msg("gameStatus",state.noticeUntil>Date.now()?state.notice:"");
 }
 const doSort=bin=>isHost?hostSort(myId,bin):sendHost({type:"sort",bin});
 const doPull=()=>isHost?hostPull(myId):sendHost({type:"pull"});
 const doSab=kind=>isHost?hostSabotage(myId,kind):sendHost({type:"sabotage",kind});
+const doSoap=()=>isHost?hostSoap(myId):sendHost({type:"soap"});
 function renderEnd(){
   const sab=state.players.find(p=>p.id===state.saboteurId);
   $("winnerTitle").textContent=state.winner==="crew"?"THE CREW SAVED THE LAUNDRY!":state.winner==="saboteur"?"THE SABOTEUR RUINED THE LOAD!":"IT'S A DRAW!";
@@ -269,13 +291,10 @@ function renderEnd(){
 }
 function playAgain(){
   if(!isHost)return;
-  if(demoMode){
-    startDemo();
-    return;
-  }
+  if(demoMode){startDemo();return}
   state.status="lobby";
   state.players.forEach(p=>{p.ready=p.id===state.hostId;p.role=null});
-  Object.assign(state,{clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0});
+  Object.assign(state,{clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0});
   roleSeen=false;
   msg("lobbyStatus","Round reset — ready up for the rematch!");
   emitState();
@@ -283,7 +302,7 @@ function playAgain(){
 function leave(){try{peer?.destroy()}catch{}location.reload()}
 
 $("createBtn").onclick=createRoom;$("joinBtn").onclick=joinRoom;$("readyBtn").onclick=toggleReady;$("startBtn").onclick=startRound;
-$("roleReadyBtn").onclick=enterGame;$("pullBtn").onclick=doPull;$("againBtn").onclick=playAgain;$("lobbyHomeBtn").onclick=leave;$("endHomeBtn").onclick=leave;
+$("roleReadyBtn").onclick=enterGame;$("pullBtn").onclick=doPull;$("soapBtn").onclick=doSoap;$("againBtn").onclick=playAgain;$("lobbyHomeBtn").onclick=leave;$("endHomeBtn").onclick=leave;
 document.querySelectorAll("[data-sort]").forEach(b=>b.onclick=()=>doSort(b.dataset.sort));
 document.querySelectorAll("[data-sab]").forEach(b=>b.onclick=()=>doSab(b.dataset.sab));
 const dialog=$("rulesDialog");$("rulesBtn").onclick=()=>dialog.showModal();$("closeRulesBtn").onclick=()=>dialog.close();
@@ -291,17 +310,12 @@ setInterval(()=>{if(state?.status==="playing"){renderGame();if(isHost)checkWin()
 
 const params=new URLSearchParams(location.search);
 const inviteRoom=params.get("room");
-if(inviteRoom){
-  $("roomInput").value=inviteRoom.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,5);
-}
-$("roomInput").addEventListener("input",e=>{
-  e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,5);
-});
+if(inviteRoom){$("roomInput").value=inviteRoom.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,5)}
+$("roomInput").addEventListener("input",e=>{e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"").slice(0,5)});
 
 $("copyInviteBtn").onclick=async()=>{
   if(!state?.code)return;
-  const url=new URL(location.href);
-  url.searchParams.set("room",state.code);
+  const url=new URL(location.href);url.searchParams.set("room",state.code);
   try{
     await navigator.clipboard.writeText(url.toString());
     msg("lobbyStatus","Invite link copied!");
@@ -310,61 +324,33 @@ $("copyInviteBtn").onclick=async()=>{
   }
 };
 
-
 function startDemo(){
   myName=cleanName()||"You";
-  demoMode=true;
-  isHost=true;
-  joined=true;
-  roomCode="DEMO";
-  myId="demo-player";
+  demoMode=true;isHost=true;joined=true;roomCode="DEMO";myId="demo-player";
   const playerRole=Math.random()<0.5?"crew":"saboteur";
   const botRole=playerRole==="crew"?"saboteur":"crew";
   state={
-    status:"playing",
-    code:"DEMO",
-    hostId:myId,
-    players:[
-      {id:myId,name:myName,ready:true,role:playerRole},
-      {id:"bot-player",name:"Laundry Bot",ready:true,role:botRole}
-    ],
-    clean:0,
-    ruined:0,
-    ruinedItems:[],
-    winner:null,
-    saboteurId:playerRole==="saboteur"?myId:"bot-player",
-    roundStart:Date.now(),
-    item:null,
-    sabReadyAt:Date.now()+3000,
-    itemSeq:0
+    status:"playing",code:"DEMO",hostId:myId,
+    players:[{id:myId,name:myName,ready:true,role:playerRole},{id:"bot-player",name:"Laundry Bot",ready:true,role:botRole}],
+    clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:playerRole==="saboteur"?myId:"bot-player",roundStart:Date.now(),item:null,sabReadyAt:Date.now()+3000,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0
   };
-  roleSeen=false;
-  $("gameCode").textContent="DEMO";
-  showRole();
-  startHostLoops();
+  roleSeen=false;$("gameCode").textContent="DEMO";showRole();startHostLoops();
 }
-
 function startBotLoop(){
   clearInterval(botTimer);
   botTimer=setInterval(()=>{
     if(!demoMode||!state||state.status!=="playing")return;
-    const bot=state.players.find(p=>p.id==="bot-player");
-    if(!bot)return;
-
+    const bot=state.players.find(p=>p.id==="bot-player");if(!bot)return;
     if(bot.role==="saboteur"){
-      if(state.item && !state.item.contaminated && Date.now()>=state.sabReadyAt && Date.now()-state.item.spawnedAt>3500 && Math.random()<0.28){
+      if(state.item&&!state.item.contaminated&&Date.now()>=state.sabReadyAt&&Date.now()-state.item.spawnedAt>3500&&Math.random()<0.28){
         const kinds=["red-in-whites","white-in-darks","color-in-whites"];
         hostSabotage("bot-player",kinds[Math.floor(Math.random()*kinds.length)]);
       }
     }else{
       if(!state.item)return;
-      const age=Date.now()-state.item.spawnedAt;
-      if(age<3000)return;
-
+      const age=Date.now()-state.item.spawnedAt;if(age<3000)return;
       if(state.item.contaminated){
-        if(Math.random()<0.38){
-          hostPull("bot-player");
-        }
+        if(Math.random()<0.38)hostPull("bot-player");
       }else if(Math.random()<0.55){
         const correct=Math.random()<0.88;
         let bin=state.item.type;
@@ -377,5 +363,4 @@ function startBotLoop(){
     }
   },1800);
 }
-
 $("demoBtn").onclick=startDemo;
