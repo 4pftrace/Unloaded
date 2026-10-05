@@ -19,8 +19,9 @@
 
       <div class="home-card">
         <label>
-          DISPLAY NAME
-          <input id="nameInput" maxlength="16" placeholder="Enter your name" autocomplete="off" />
+          YOUR NAME / NICKNAME
+          <span class="field-help">Pick the name you want everyone in the room to see.</span>
+          <input id="nameInput" maxlength="16" placeholder="e.g. Tracy" autocomplete="off" />
         </label>
 
         <button id="createBtn" class="primary">CREATE ROOM</button>
@@ -30,6 +31,7 @@
 
         <label>
           ROOM CODE
+          <span class="field-help">Joining someone? Enter the 5-character code they shared with you.</span>
           <input id="roomInput" maxlength="6" placeholder="ABCDE" autocomplete="off" />
         </label>
 
@@ -88,7 +90,7 @@
           <div class="machine"><div class="door spin">◉</div><small>WHITES</small></div>
           <div class="machine"><div class="door spin">◉</div><small>DARKS</small></div>
           <div class="machine"><div class="door spin">◉</div><small>COLORS</small></div>
-          <div class="machine vending">SOAP<br>25¢</div>
+          <button id="soapBtn" class="machine vending" type="button">SOAP SAVE<br><small>1 USE</small></button>
         </div>
 
         <div class="avatars" id="avatars"></div>
@@ -167,6 +169,7 @@
       <li><strong>Crew:</strong> Sort whites, darks and colors into the matching loads.</li>
       <li><strong>Saboteur:</strong> Secretly slip mismatched clothing into the laundry.</li>
       <li>Crew players can <strong>Pull Item</strong> if something looks suspicious.</li>
+      <li><strong>Soap Save:</strong> The Crew gets one shared soap use per round. Use it on a contaminated item to clean it instantly and count it as a clean item.</li>
       <li>Crew wins by finishing <strong>40 clean items</strong>.</li>
       <li>Saboteur wins by ruining <strong>20 items</strong>.</li>
       <li>The round lasts <strong>90 seconds</strong>. If time expires, the side with the higher percentage of its goal wins.</li>
