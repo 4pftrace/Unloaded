@@ -13,8 +13,10 @@ button:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--shadow)}
 button.ghost{background:var(--cream)}
 button.primary{background:var(--yellow)}
 button.tiny{padding:8px 10px}
+button:disabled{cursor:not-allowed;opacity:.55;transform:none;box-shadow:4px 4px 0 var(--shadow)}
 input{width:100%;padding:14px;border:3px solid var(--shadow);background:white;color:var(--ink)}
 label{display:grid;gap:7px;font-size:.85rem;font-weight:800;letter-spacing:.08em}
+.field-help{font-size:.72rem;line-height:1.35;letter-spacing:0;font-weight:700;color:#64707a;text-transform:none}
 .screen{display:none;min-height:100vh;padding:24px}
 .screen.active{display:flex}
 .hidden{display:none!important}
@@ -53,6 +55,9 @@ h1 span{color:var(--yellow)}
 .machine{background:#aebdc3;border:4px solid var(--shadow);min-height:120px;padding:10px;text-align:center;display:grid;place-items:center}
 .machine small{font-weight:900}.door{width:65px;height:65px;border:7px solid #3b4650;border-radius:50%;display:grid;place-items:center;background:#75a2b1;color:#d9f7ff;font-size:30px}
 .spin{animation:spin 3s linear infinite}.vending{background:#d76560;color:white;font-size:1.2rem;font-weight:900}
+button.machine.vending{width:100%;box-shadow:none;line-height:1.2}
+button.machine.vending:active{transform:translate(2px,2px);box-shadow:none}
+button.machine.vending:disabled{box-shadow:none;transform:none;background:#9e7774;color:#eee}
 .avatars{display:flex;justify-content:center;gap:10px;min-height:60px;align-items:end}
 .avatar{font-size:34px;position:relative}.avatar span{display:block;font-size:.6rem;background:white;border:2px solid var(--shadow);padding:2px 4px;white-space:nowrap}
 .belt-wrap{display:grid;grid-template-columns:1fr 110px;gap:0;align-items:stretch}
