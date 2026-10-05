@@ -1,7 +1,7 @@
 
 import Peer from "https://esm.sh/peerjs@1.5.4?bundle";
 
-const CLEAN_GOAL=40, RUINED_GOAL=20, ROUND_MS=90000, SAB_COOLDOWN=10000;
+const CLEAN_GOAL=40, RUINED_GOAL=20, ROUND_MS=90000, SAB_COOLDOWN=5000;
 let peer, hostConn, isHost=false, myId="", myName="", roomCode="", joined=false, roleSeen=false, demoMode=false, botTimer=null;
 let connections=new Map(), state=null, tickTimer=null, spawnTimer=null;
 
@@ -144,7 +144,11 @@ function enterLobby(){$("lobbyCode").textContent=roomCode;$("gameCode").textCont
 function renderState(){
   if(!state)return;
   $("lobbyCode").textContent=state.code;$("gameCode").textContent=state.code;renderPlayers();
-  if(state.status==="playing"&&!roleSeen)showRole();
+  if(state.status==="lobby"){
+    roleSeen=false;
+    show("lobby");
+  }
+  else if(state.status==="playing"&&!roleSeen)showRole();
   else if(state.status==="playing"&&roleSeen){show("game");renderGame()}
   else if(state.status==="ended")renderEnd();
 }
@@ -163,7 +167,7 @@ function startRound(){
   if(state.players.some(p=>!p.ready))return msg("lobbyStatus","Everyone must be ready.");
   const sab=state.players[Math.floor(Math.random()*state.players.length)];
   state.players.forEach(p=>p.role=p.id===sab.id?"saboteur":"crew");
-  Object.assign(state,{saboteurId:sab.id,clean:0,ruined:0,ruinedItems:[],winner:null,roundStart:Date.now(),sabReadyAt:Date.now()+5000,status:"playing",item:null,itemSeq:0});
+  Object.assign(state,{saboteurId:sab.id,clean:0,ruined:0,ruinedItems:[],winner:null,roundStart:Date.now(),sabReadyAt:Date.now()+3000,status:"playing",item:null,itemSeq:0});
   roleSeen=false;emitState();startHostLoops();
 }
 function startHostLoops(){
@@ -257,7 +261,11 @@ const doSab=kind=>isHost?hostSabotage(myId,kind):sendHost({type:"sabotage",kind}
 function renderEnd(){
   const sab=state.players.find(p=>p.id===state.saboteurId);
   $("winnerTitle").textContent=state.winner==="crew"?"THE CREW SAVED THE LAUNDRY!":state.winner==="saboteur"?"THE SABOTEUR RUINED THE LOAD!":"IT'S A DRAW!";
-  $("endScore").textContent="Clean "+state.clean+"/40 • Ruined "+state.ruined+"/20";$("saboteurName").textContent=sab?.name||"Unknown";$("againBtn").classList.toggle("hidden",!isHost);show("end");
+  $("endScore").textContent="Clean "+state.clean+"/40 • Ruined "+state.ruined+"/20";
+  $("saboteurName").textContent=sab?.name||"Unknown";
+  $("againBtn").textContent="PLAY AGAIN — SAME ROOM";
+  $("againBtn").classList.toggle("hidden",!isHost);
+  show("end");
 }
 function playAgain(){
   if(!isHost)return;
@@ -265,8 +273,12 @@ function playAgain(){
     startDemo();
     return;
   }
-  state.status="lobby";state.players.forEach(p=>{p.ready=p.id===state.hostId;p.role=null});
-  Object.assign(state,{clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null});roleSeen=false;emitState();
+  state.status="lobby";
+  state.players.forEach(p=>{p.ready=p.id===state.hostId;p.role=null});
+  Object.assign(state,{clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0});
+  roleSeen=false;
+  msg("lobbyStatus","Round reset — ready up for the rematch!");
+  emitState();
 }
 function leave(){try{peer?.destroy()}catch{}location.reload()}
 
