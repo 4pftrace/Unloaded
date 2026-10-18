@@ -85,7 +85,7 @@ function handleHostMessage(conn,d){
     emitState();
   }else if(d.type==="ready"){
     const p=state.players.find(p=>p.id===conn.peer);if(p){p.ready=!!d.ready;emitState()}
-  }else if(d.type==="sort")hostSort(conn.peer,d.bin);
+  }else if(d.type==="sort")hostSort(conn.peer,d.bin,d.itemId);
   else if(d.type==="pull")hostPull(conn.peer);
   else if(d.type==="sabotage")hostSabotage(conn.peer,d.kind);
   else if(d.type==="soap")hostSoap(conn.peer);
@@ -184,24 +184,40 @@ function hostTick(){
     state.item=null;checkWin();emitState();
   }
 }
-function hostSort(playerId,bin){
+function hostSort(playerId,bin,itemId=state?.item?.id){
   if(state.status!=="playing"||!state.item)return;
+  if(itemId!==state.item.id)return;
   const p=state.players.find(x=>x.id===playerId);if(!p||p.role!=="crew")return;
   state.sortPenalties=state.sortPenalties||{};
   const penalty=state.sortPenalties[playerId];
   if(penalty&&penalty.itemId===state.item.id&&Date.now()<penalty.until)return;
 
+  const validBins=["whites","darks","colors"];
+  if(!validBins.includes(bin))return;
+
   if(state.item.contaminated){
     state.ruined++;
     state.ruinedItems=state.ruinedItems||[];
     state.ruinedItems.push(state.item.sabotageLabel||state.item.label||"Ruined item");
+    state.notice="⚠ CONTAMINATED LOAD — it needed to be PULLED, not sorted.";
+    state.noticeUntil=Date.now()+2500;
     state.item=null;
-  }else if(bin===state.item.type){
-    state.clean++;
-    state.item=null;
-  }else{
-    state.sortPenalties[playerId]={itemId:state.item.id,until:Date.now()+WRONG_SORT_COOLDOWN_MS};
+    checkWin();emitState();
+    return;
   }
+
+  if(bin!==state.item.type){
+    state.sortPenalties[playerId]={itemId:state.item.id,until:Date.now()+WRONG_SORT_COOLDOWN_MS};
+    state.notice="❌ WRONG LOAD — "+state.item.label+" belongs in "+state.item.type.toUpperCase()+".";
+    state.noticeUntil=Date.now()+2200;
+    emitState();
+    return;
+  }
+
+  state.clean++;
+  state.notice="✓ Correct — "+state.item.label+" → "+state.item.type.toUpperCase()+".";
+  state.noticeUntil=Date.now()+1200;
+  state.item=null;
   checkWin();emitState();
 }
 function hostPull(playerId){
@@ -274,7 +290,8 @@ function renderGame(){
   const wrongSortLeft=myPenalty&&myPenalty.itemId===state.item?.id?Math.max(0,Math.ceil((myPenalty.until-Date.now())/1000)):0;
   document.querySelectorAll("[data-sort]").forEach(b=>b.disabled=!!wrongSortLeft);
   if(!sab&&wrongSortLeft){
-    msg("gameStatus","WRONG LOAD — wait "+wrongSortLeft+"s, then try this item again.");
+    const belongs=state.item?.type?state.item.type.toUpperCase():"the correct load";
+    msg("gameStatus","❌ WRONG LOAD — this item belongs in "+belongs+". Retry in "+wrongSortLeft+"s.");
   }else{
     msg("gameStatus",state.noticeUntil>Date.now()?state.notice:"");
   }
@@ -300,7 +317,7 @@ function renderGame(){
   $("ruinedListCount").textContent=ruinedItems.length+" item"+(ruinedItems.length===1?"":"s");
   $("ruinedList").innerHTML=ruinedItems.length?ruinedItems.slice(-12).map(x=>'<span class="ruined-chip">'+esc(x)+'</span>').join(""):'<span class="ruined-empty">Nothing ruined yet.</span>';
 }
-const doSort=bin=>isHost?hostSort(myId,bin):sendHost({type:"sort",bin});
+const doSort=bin=>{const itemId=state?.item?.id;if(!itemId)return;if(isHost)hostSort(myId,bin,itemId);else sendHost({type:"sort",bin,itemId})};
 const doPull=()=>isHost?hostPull(myId):sendHost({type:"pull"});
 const doSab=kind=>isHost?hostSabotage(myId,kind):sendHost({type:"sabotage",kind});
 const doSoap=()=>isHost?hostSoap(myId):sendHost({type:"soap"});
@@ -382,7 +399,7 @@ function startBotLoop(){
           const bins=["whites","darks","colors"].filter(x=>x!==state.item.type);
           bin=bins[Math.floor(Math.random()*bins.length)];
         }
-        hostSort("bot-player",bin);
+        hostSort("bot-player",bin,state.item?.id);
       }
     }
   },1800);
