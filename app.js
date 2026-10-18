@@ -1,6 +1,6 @@
 import Peer from "https://esm.sh/peerjs@1.5.4?bundle";
 
-const CLEAN_GOAL=40, RUINED_GOAL=20, ROUND_MS=90000, SAB_COOLDOWN=5000, PULL_WINDOW_MS=3000, WRONG_SORT_COOLDOWN_MS=2000;
+const CLEAN_GOAL=40, RUINED_GOAL=20, ROUND_MS=90000, SAB_COOLDOWN=3000, PULL_WINDOW_MS=3000, WRONG_SORT_COOLDOWN_MS=2000, PULL_COOLDOWN_MS=2000;
 let peer, hostConn, isHost=false, myId="", myName="", roomCode="", joined=false, roleSeen=false, demoMode=false, botTimer=null;
 let connections=new Map(), state=null, tickTimer=null, spawnTimer=null;
 
@@ -58,7 +58,7 @@ async function createRoom(){
   roomCode=makeCode();myId=roomPeer(roomCode);isHost=true;msg("homeStatus","Opening room...");
   try{
     await makePeer(myId);
-    state={status:"lobby",code:roomCode,hostId:myId,players:[{id:myId,name:myName,ready:true}],clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{}};
+    state={status:"lobby",code:roomCode,hostId:myId,players:[{id:myId,name:myName,ready:true}],clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{},pullCooldowns:{}};
     peer.on("connection",acceptConnection);joined=true;enterLobby();
   }catch(e){msg("homeStatus","Couldn't create room. Try again.")}
 }
@@ -86,7 +86,7 @@ function handleHostMessage(conn,d){
   }else if(d.type==="ready"){
     const p=state.players.find(p=>p.id===conn.peer);if(p){p.ready=!!d.ready;emitState()}
   }else if(d.type==="sort")hostSort(conn.peer,d.bin,d.itemId);
-  else if(d.type==="pull")hostPull(conn.peer);
+  else if(d.type==="pull")hostPull(conn.peer,d.itemId);
   else if(d.type==="sabotage")hostSabotage(conn.peer,d.kind);
   else if(d.type==="soap")hostSoap(conn.peer);
 }
@@ -156,7 +156,7 @@ function startRound(){
   if(state.players.some(p=>!p.ready))return msg("lobbyStatus","Everyone must be ready.");
   const sab=state.players[Math.floor(Math.random()*state.players.length)];
   state.players.forEach(p=>p.role=p.id===sab.id?"saboteur":"crew");
-  Object.assign(state,{saboteurId:sab.id,clean:0,ruined:0,ruinedItems:[],winner:null,roundStart:Date.now(),sabReadyAt:Date.now()+3000,status:"playing",item:null,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{}});
+  Object.assign(state,{saboteurId:sab.id,clean:0,ruined:0,ruinedItems:[],winner:null,roundStart:Date.now(),sabReadyAt:Date.now()+3000,status:"playing",item:null,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{},pullCooldowns:{}});
   roleSeen=false;emitState();startHostLoops();
 }
 function startHostLoops(){
@@ -220,10 +220,22 @@ function hostSort(playerId,bin,itemId=state?.item?.id){
   state.item=null;
   checkWin();emitState();
 }
-function hostPull(playerId){
+function hostPull(playerId,itemId=state?.item?.id){
   if(state.status!=="playing"||!state.item)return;
+  if(itemId!==state.item.id)return;
   const p=state.players.find(x=>x.id===playerId);if(!p||p.role!=="crew")return;
-  if(!state.item.contaminated)state.clean=Math.max(0,state.clean-1);
+  state.pullCooldowns=state.pullCooldowns||{};
+  if(Date.now()<(state.pullCooldowns[playerId]||0))return;
+  state.pullCooldowns[playerId]=Date.now()+PULL_COOLDOWN_MS;
+
+  if(state.item.contaminated){
+    state.notice="✓ "+p.name+" pulled the contaminated item in time.";
+    state.noticeUntil=Date.now()+1600;
+  }else{
+    state.clean=Math.max(0,state.clean-1);
+    state.notice="⚠ FALSE PULL — clean score -1. Pull cooling down.";
+    state.noticeUntil=Date.now()+1800;
+  }
   state.item=null;emitState();
 }
 function hostSabotage(playerId,kind){
@@ -286,12 +298,18 @@ function renderGame(){
   $("cooldownText").textContent=cd?"Sabotage cooling down: "+cd+"s":"Sabotage ready.";
 
   state.sortPenalties=state.sortPenalties||{};
+  state.pullCooldowns=state.pullCooldowns||{};
   const myPenalty=state.item?state.sortPenalties[myId]:null;
   const wrongSortLeft=myPenalty&&myPenalty.itemId===state.item?.id?Math.max(0,Math.ceil((myPenalty.until-Date.now())/1000)):0;
+  const pullLeft=Math.max(0,Math.ceil(((state.pullCooldowns[myId]||0)-Date.now())/1000));
   document.querySelectorAll("[data-sort]").forEach(b=>b.disabled=!!wrongSortLeft);
+  $("pullBtn").disabled=sab||!!pullLeft;
+  $("pullBtn").textContent=pullLeft?"PULL COOLDOWN "+pullLeft+"s":"PULL ITEM";
   if(!sab&&wrongSortLeft){
     const belongs=state.item?.type?state.item.type.toUpperCase():"the correct load";
     msg("gameStatus","❌ WRONG LOAD — this item belongs in "+belongs+". Retry in "+wrongSortLeft+"s.");
+  }else if(!sab&&pullLeft){
+    msg("gameStatus","PULL cooling down: "+pullLeft+"s");
   }else{
     msg("gameStatus",state.noticeUntil>Date.now()?state.notice:"");
   }
@@ -318,7 +336,7 @@ function renderGame(){
   $("ruinedList").innerHTML=ruinedItems.length?ruinedItems.slice(-12).map(x=>'<span class="ruined-chip">'+esc(x)+'</span>').join(""):'<span class="ruined-empty">Nothing ruined yet.</span>';
 }
 const doSort=bin=>{const itemId=state?.item?.id;if(!itemId)return;if(isHost)hostSort(myId,bin,itemId);else sendHost({type:"sort",bin,itemId})};
-const doPull=()=>isHost?hostPull(myId):sendHost({type:"pull"});
+const doPull=()=>{const itemId=state?.item?.id;if(!itemId)return;if(isHost)hostPull(myId,itemId);else sendHost({type:"pull",itemId})};
 const doSab=kind=>isHost?hostSabotage(myId,kind):sendHost({type:"sabotage",kind});
 const doSoap=()=>isHost?hostSoap(myId):sendHost({type:"soap"});
 function renderEnd(){
@@ -335,7 +353,7 @@ function playAgain(){
   if(demoMode){startDemo();return}
   state.status="lobby";
   state.players.forEach(p=>{p.ready=p.id===state.hostId;p.role=null});
-  Object.assign(state,{clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{}});
+  Object.assign(state,{clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{},pullCooldowns:{}});
   roleSeen=false;
   msg("lobbyStatus","Round reset — ready up for the rematch!");
   emitState();
@@ -373,7 +391,7 @@ function startDemo(){
   state={
     status:"playing",code:"DEMO",hostId:myId,
     players:[{id:myId,name:myName,ready:true,role:playerRole},{id:"bot-player",name:"Laundry Bot",ready:true,role:botRole}],
-    clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:playerRole==="saboteur"?myId:"bot-player",roundStart:Date.now(),item:null,sabReadyAt:Date.now()+3000,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{}
+    clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:playerRole==="saboteur"?myId:"bot-player",roundStart:Date.now(),item:null,sabReadyAt:Date.now()+3000,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{},pullCooldowns:{}
   };
   roleSeen=false;$("gameCode").textContent="DEMO";showRole();startHostLoops();
 }
@@ -391,7 +409,7 @@ function startBotLoop(){
       if(!state.item)return;
       const age=Date.now()-state.item.spawnedAt;if(age<3000)return;
       if(state.item.contaminated){
-        if(Math.random()<0.38)hostPull("bot-player");
+        if(Math.random()<0.38)hostPull("bot-player",state.item?.id);
       }else if(Math.random()<0.55){
         const correct=Math.random()<0.88;
         let bin=state.item.type;
