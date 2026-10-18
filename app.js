@@ -1,6 +1,6 @@
 import Peer from "https://esm.sh/peerjs@1.5.4?bundle";
 
-const CLEAN_GOAL=40, RUINED_GOAL=20, ROUND_MS=90000, SAB_COOLDOWN=5000;
+const CLEAN_GOAL=40, RUINED_GOAL=20, ROUND_MS=90000, SAB_COOLDOWN=5000, PULL_WINDOW_MS=3000, WRONG_SORT_COOLDOWN_MS=2000;
 let peer, hostConn, isHost=false, myId="", myName="", roomCode="", joined=false, roleSeen=false, demoMode=false, botTimer=null;
 let connections=new Map(), state=null, tickTimer=null, spawnTimer=null;
 
@@ -58,7 +58,7 @@ async function createRoom(){
   roomCode=makeCode();myId=roomPeer(roomCode);isHost=true;msg("homeStatus","Opening room...");
   try{
     await makePeer(myId);
-    state={status:"lobby",code:roomCode,hostId:myId,players:[{id:myId,name:myName,ready:true}],clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0};
+    state={status:"lobby",code:roomCode,hostId:myId,players:[{id:myId,name:myName,ready:true}],clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{}};
     peer.on("connection",acceptConnection);joined=true;enterLobby();
   }catch(e){msg("homeStatus","Couldn't create room. Try again.")}
 }
@@ -156,7 +156,7 @@ function startRound(){
   if(state.players.some(p=>!p.ready))return msg("lobbyStatus","Everyone must be ready.");
   const sab=state.players[Math.floor(Math.random()*state.players.length)];
   state.players.forEach(p=>p.role=p.id===sab.id?"saboteur":"crew");
-  Object.assign(state,{saboteurId:sab.id,clean:0,ruined:0,ruinedItems:[],winner:null,roundStart:Date.now(),sabReadyAt:Date.now()+3000,status:"playing",item:null,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0});
+  Object.assign(state,{saboteurId:sab.id,clean:0,ruined:0,ruinedItems:[],winner:null,roundStart:Date.now(),sabReadyAt:Date.now()+3000,status:"playing",item:null,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{}});
   roleSeen=false;emitState();startHostLoops();
 }
 function startHostLoops(){
@@ -187,12 +187,22 @@ function hostTick(){
 function hostSort(playerId,bin){
   if(state.status!=="playing"||!state.item)return;
   const p=state.players.find(x=>x.id===playerId);if(!p||p.role!=="crew")return;
+  state.sortPenalties=state.sortPenalties||{};
+  const penalty=state.sortPenalties[playerId];
+  if(penalty&&penalty.itemId===state.item.id&&Date.now()<penalty.until)return;
+
   if(state.item.contaminated){
     state.ruined++;
     state.ruinedItems=state.ruinedItems||[];
     state.ruinedItems.push(state.item.sabotageLabel||state.item.label||"Ruined item");
-  }else if(bin===state.item.type)state.clean++;else state.clean=Math.max(0,state.clean-1);
-  state.item=null;checkWin();emitState();
+    state.item=null;
+  }else if(bin===state.item.type){
+    state.clean++;
+    state.item=null;
+  }else{
+    state.sortPenalties[playerId]={itemId:state.item.id,until:Date.now()+WRONG_SORT_COOLDOWN_MS};
+  }
+  checkWin();emitState();
 }
 function hostPull(playerId){
   if(state.status!=="playing"||!state.item)return;
@@ -211,6 +221,7 @@ function hostSabotage(playerId,kind){
   else if(kind==="white-in-darks")state.item.label=state.item.baseLabel+" + WHITE SOCK 🧦";
   else if(kind==="color-in-whites")state.item.label=state.item.baseLabel+" + COLOR SHIRT 👕";
   state.sabReadyAt=Date.now()+SAB_COOLDOWN;
+  state.item.expiresAt=Date.now()+PULL_WINDOW_MS;
   emitState();
 }
 function hostSoap(playerId){
@@ -246,6 +257,10 @@ function renderGame(){
   const item=state.item,g=$("garment");
   if(item){
     g.textContent=item.label;g.classList.remove("empty");g.classList.toggle("suspicious",item.contaminated);$("suspicionBanner").classList.toggle("hidden",!item.contaminated);
+    if(item.contaminated){
+      const pullLeft=Math.max(0,Math.ceil((item.expiresAt-Date.now())/1000));
+      $("suspicionBanner").textContent="⚠ SOMETHING LOOKS OFF — PULL IT! "+pullLeft+"s";
+    }
   }else{
     g.textContent="NEXT LOAD...";g.className="garment empty";$("suspicionBanner").classList.add("hidden");
   }
@@ -253,6 +268,16 @@ function renderGame(){
   $("crewPanel").classList.toggle("hidden",sab);$("saboteurPanel").classList.toggle("hidden",!sab);
   const cd=Math.max(0,Math.ceil((state.sabReadyAt-Date.now())/1000));
   $("cooldownText").textContent=cd?"Sabotage cooling down: "+cd+"s":"Sabotage ready.";
+
+  state.sortPenalties=state.sortPenalties||{};
+  const myPenalty=state.item?state.sortPenalties[myId]:null;
+  const wrongSortLeft=myPenalty&&myPenalty.itemId===state.item?.id?Math.max(0,Math.ceil((myPenalty.until-Date.now())/1000)):0;
+  document.querySelectorAll("[data-sort]").forEach(b=>b.disabled=!!wrongSortLeft);
+  if(!sab&&wrongSortLeft){
+    msg("gameStatus","WRONG LOAD — wait "+wrongSortLeft+"s, then try this item again.");
+  }else{
+    msg("gameStatus",state.noticeUntil>Date.now()?state.notice:"");
+  }
 
   const soapBtn=$("soapBtn");
   if(sab){
@@ -274,7 +299,6 @@ function renderGame(){
   const ruinedItems=state.ruinedItems||[];
   $("ruinedListCount").textContent=ruinedItems.length+" item"+(ruinedItems.length===1?"":"s");
   $("ruinedList").innerHTML=ruinedItems.length?ruinedItems.slice(-12).map(x=>'<span class="ruined-chip">'+esc(x)+'</span>').join(""):'<span class="ruined-empty">Nothing ruined yet.</span>';
-  msg("gameStatus",state.noticeUntil>Date.now()?state.notice:"");
 }
 const doSort=bin=>isHost?hostSort(myId,bin):sendHost({type:"sort",bin});
 const doPull=()=>isHost?hostPull(myId):sendHost({type:"pull"});
@@ -294,7 +318,7 @@ function playAgain(){
   if(demoMode){startDemo();return}
   state.status="lobby";
   state.players.forEach(p=>{p.ready=p.id===state.hostId;p.role=null});
-  Object.assign(state,{clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0});
+  Object.assign(state,{clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:null,roundStart:null,item:null,sabReadyAt:0,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{}});
   roleSeen=false;
   msg("lobbyStatus","Round reset — ready up for the rematch!");
   emitState();
@@ -332,7 +356,7 @@ function startDemo(){
   state={
     status:"playing",code:"DEMO",hostId:myId,
     players:[{id:myId,name:myName,ready:true,role:playerRole},{id:"bot-player",name:"Laundry Bot",ready:true,role:botRole}],
-    clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:playerRole==="saboteur"?myId:"bot-player",roundStart:Date.now(),item:null,sabReadyAt:Date.now()+3000,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0
+    clean:0,ruined:0,ruinedItems:[],winner:null,saboteurId:playerRole==="saboteur"?myId:"bot-player",roundStart:Date.now(),item:null,sabReadyAt:Date.now()+3000,itemSeq:0,soapUsed:false,soapUsedBy:null,notice:"",noticeUntil:0,sortPenalties:{}
   };
   roleSeen=false;$("gameCode").textContent="DEMO";showRole();startHostLoops();
 }
